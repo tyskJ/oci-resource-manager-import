@@ -16,6 +16,7 @@
 - Visual Studio Code 1.137.0
 - oci cli 3.71.0
 - Python 3.14.2
+- Terraform v1.15.7 on darwin_arm64
 
 ### フォルダ構成
 
@@ -188,6 +189,58 @@ echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
 wait_job "${APPLY_JOB_ID}"
 ```
 
+### Resource Discovery 設定
+
+```bash
+OCI_PROVIDER_VERSION="9.3.0"
+OCI_PROVIDER_ARCH="arm64"
+```
+
+```bash
+OCI_PROVIDER_TMP_DIR="/tmp/oci-provider"
+mkdir -p "${OCI_PROVIDER_TMP_DIR}"
+```
+
+```bash
+curl -L \
+  -o "${OCI_PROVIDER_TMP_DIR}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip" \
+  "https://releases.hashicorp.com/terraform-provider-oci/${OCI_PROVIDER_VERSION}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip"
+```
+
+```bash
+unzip \
+  "${OCI_PROVIDER_TMP_DIR}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip" \
+  -d "${OCI_PROVIDER_TMP_DIR}"
+
+ls -l "${OCI_PROVIDER_TMP_DIR}"
+```
+
+```bash
+sudo mv \
+  "${OCI_PROVIDER_TMP_DIR}"/terraform-provider-oci_* \
+  /usr/local/bin/
+```
+
+```bash
+OCI_PROVIDER_BIN=$(ls /usr/local/bin/terraform-provider-oci*)
+echo "${OCI_PROVIDER_BIN}"
+```
+
+```bash
+sudo ln -sfn \
+  "${OCI_PROVIDER_BIN}" \
+  /usr/local/bin/tf-oci
+
+ls -l /usr/local/bin/tf-oci
+```
+
+```bash
+tf-oci -command=list_export_services
+tf-oci -command=list_export_resources
+```
+
+### Import リソース
+
 ### 後片付け - ローカル -
 
 #### 1. 環境削除
@@ -313,18 +366,4 @@ oci os object bulk-delete \
 
 #### リファレンス
 
-- [terraform_data resource reference](https://developer.hashicorp.com/terraform/language/resources/terraform-data)
-- [Backend block configuration overview](https://developer.hashicorp.com/terraform/language/backend#partial-configuration)
-- [All Image Families - Oracle Cloud Infrastructure Documentation/Images](https://docs.oracle.com/en-us/iaas/images/)
-- [タグおよびタグ・ネームスペースの概念 - Oracle Cloud Infrastructureドキュメント](https://docs.oracle.com/ja-jp/iaas/Content/Tagging/Tasks/managingtagsandtagnamespaces.htm#Who)
-- [About the DNS Domains and Hostnames - Oracle Cloud Infrastructure Documentation](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/dns.htm#About)
-
-#### ブログ
-
-- [Terraformでmoduleを使わずに複数環境を構築する - Zenn](https://zenn.dev/smartround_dev/articles/5e20fa7223f0fd)
-- [Terraformでmoduleを使わずに複数環境を構築して感じた利点 - SpeakerDeck](https://speakerdeck.com/shonansurvivors/building-multiple-environments-without-using-modules-in-terraform)
-- [個人的備忘録：Terraformディレクトリ整理の個人メモ（ファイル分割編） - Qiita](https://qiita.com/free-honda/items/5484328d5b52326ed87e)
-- [Terraformの auto.tfvars を使うと、環境管理がずっと楽になる話 - note](https://note.com/minato_kame/n/neb271c81e0e2)
-- [Terraform v1.9 では null_resource を安全に terraform_data に置き換えることができる -Zenn](https://zenn.dev/terraform_jp/articles/tf-null-resource-to-terraform-data)
-- [Terraform cloudinit Provider を使って MIME multi-part 形式の cloud-init 設定を管理する - HatenaBlog](https://chaya2z.hatenablog.jp/entry/2025/10/15/040000)
-- [TerraformのDynamic Blocksを使ってみた - DevelopersIO](https://dev.classmethod.jp/articles/terraform-dynamic-blocks/)
+- [リソース検出の設定 - Oracle Cloud Infrastructure ドキュメント](https://docs.oracle.com/ja-jp/iaas/Content/dev/terraform/tutorials/tf-resource-discovery-setup.htm)
