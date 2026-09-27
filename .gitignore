@@ -44,3 +44,4 @@ tmp.tf
 **/.key/*
 *.zip
 tfplan.json
+**/resource-discovery/*
