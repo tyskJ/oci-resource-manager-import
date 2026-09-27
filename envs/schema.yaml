@@ -1,0 +1,64 @@
+# ************************************************************
+# Header
+# ************************************************************
+title: Test Import to Resource Manager
+description: Proof of Import Resource to Resource Manager by Import Block
+schemaVersion: 1.1.0
+version: "20261001"
+locale: "en"
+
+# ************************************************************
+# Variable Groups
+# ************************************************************
+variableGroups:
+  - title: Common Variables
+    visible: true
+    variables:
+      - system_name
+  - title: NW Variables
+    visible: true
+    variables:
+      - vcn_cidr
+
+# ************************************************************
+# Variables
+# ************************************************************
+variables:
+  # ---- Hidden Variables ---- #
+  ### Tenancy OCID
+  tenancy_ocid:
+    title: Tenancy OCID
+    description: The Oracle Cloud Identifier (OCID) for your tenancy
+    type: string
+    required: true
+    visible: false
+  ### Region Name
+  region:
+    title: Region
+    description: The region in which to create all resources
+    type: oci:identity:region:name
+    required: true
+    visible: false
+
+  # ---- Common Variables ---- #
+  ### System Name
+  system_name:
+    title: System Name
+    description: The System Name for Your Resources
+    type: string
+    required: true
+    visible: true
+
+  # ---- NW Variables ---- #
+  ### VCN Cidr
+  vcn_cidr:
+    title: Virtual Cloud Network CIDR
+    description: CIDR block for the VCN to create
+    type: enum
+    enum:
+      - 10.0.0.0/16
+      - 172.16.0.0/16
+      - 192.168.0.0/16
+    default: 10.0.0.0/16
+    required: true
+    visible: true
