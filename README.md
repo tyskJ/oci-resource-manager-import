@@ -1,0 +1,330 @@
+![](./doc/001samune.png)
+
+# OCI Resource Managerで既存リソースをimportしたい 〜terraform importとの違いと実践手順〜
+
+- [詳細]()
+
+## 構成図
+
+![](./doc/drawio/architecture.drawio.png)
+
+## デプロイ - Terraform -
+
+### 作業環境 - ローカル -
+
+- macOS Tahoe ( v26.6.2 )
+- Visual Studio Code 1.137.0
+- oci cli 3.71.0
+- Python 3.14.2
+
+### フォルダ構成
+
+- [こちら](./folder.md) を参照
+
+### 前提条件
+
+- `manage all-resources IN TENANCY` を付与した IAM グループに所属する IAM ユーザーが作成されていること
+- 以下コマンドを実行し、_ADMIN_ プロファイルを作成していること (デフォルトリージョンは _ap-tokyo-1_ )
+
+```bash
+oci session authenticate
+```
+
+### 事前作業(1)
+
+#### 1. 各種モジュールインストール
+
+- [GitHub](https://github.com/tyskJ/common-environment-setup) を参照
+
+### 事前作業 - ローカル -
+
+#### 1. 定義ファイルの圧縮
+
+```bash
+ZIP_FILE="stack.zip"
+```
+
+```bash
+zip -r "${ZIP_FILE}" envs
+```
+
+#### 2. 関数定義
+
+```bash
+wait_job() {
+  local JOB_ID=$1
+
+  while true; do
+    STATE=$(oci resource-manager job get \
+      --job-id "${JOB_ID}" \
+      --profile ADMIN \
+      --auth security_token \
+      --query 'data."lifecycle-state"' \
+      --raw-output)
+
+    echo "Job=${JOB_ID} State=${STATE}"
+
+    case "${STATE}" in
+      SUCCEEDED)
+        echo "Job succeeded."
+        return 0
+        ;;
+      FAILED|CANCELED)
+        echo "ERROR: Job failed."
+        oci resource-manager job get \
+          --job-id "${JOB_ID}" \
+          --profile ADMIN \
+          --auth security_token
+        return 1
+        ;;
+      *)
+        sleep 30
+        ;;
+    esac
+  done
+}
+```
+
+### 実作業 - OCI Resource Manager -
+
+#### 1. スタック作成
+
+```bash
+TENANCY_ID=$(oci iam compartment list \
+  --lifecycle-state ACTIVE \
+  --include-root \
+  --profile ADMIN \
+  --auth security_token \
+  --query "data[?\"compartment-id\"==null].id | [0]" \
+  --raw-output)
+```
+
+```bash
+REGION=$(awk -F= '/\[ADMIN\]/{f=1} f && /^region=/{print $2; exit}' ~/.oci/config)
+SYSTEM_NAME="oci-resource-manager-import"
+TF_VER="1.5.x"
+STACK_NAME="${SYSTEM_NAME}-stack"
+```
+
+```bash
+cat <<EOF > terraform.tfvars.json
+{
+  "tenancy_ocid": "${TENANCY_ID}",
+  "region": "${REGION}",
+  "system_name": "${SYSTEM_NAME}",
+}
+EOF
+```
+
+```bash
+oci resource-manager stack create \
+--compartment-id "${TENANCY_ID}" \
+--display-name "${STACK_NAME}" \
+--description "Dev Stack" \
+--config-source "${ZIP_FILE}" \
+--working-directory "envs" \
+--terraform-version "${TF_VER}" \
+--variables file://terraform.tfvars.json \
+--wait-for-state "ACTIVE" \
+--profile ADMIN --auth security_token
+```
+
+#### 2. Plan Job 作成
+
+```bash
+STACK_ID=$(oci resource-manager stack list \
+  --all \
+  --compartment-id "${DIP_COMPARTMENT_OCID}" \
+  --display-name "${STACK_NAME}" \
+  --profile ADMIN --auth security_token \
+  --query 'data[0].id' \
+  --raw-output)
+```
+
+```bash
+# ① Job作成（ここでIDは必ず取得）
+PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
+  --stack-id "${STACK_ID}" \
+  --display-name "${STACK_NAME}-plan" \
+  --profile ADMIN --auth security_token \
+  --query 'data.id' \
+  --raw-output)
+
+echo "PLAN_JOB_ID=$PLAN_JOB_ID"
+
+wait_job "${PLAN_JOB_ID}"
+```
+
+```bash
+oci resource-manager job get-job-tf-plan \
+  --job-id "${PLAN_JOB_ID}" \
+  --tf-plan-format JSON \
+  --file tfplan.json \
+  --profile ADMIN \
+  --auth security_token >/dev/null
+
+jq -r '
+.resource_changes[]?
+' tfplan.json
+```
+
+#### 3. Deploy
+
+```bash
+APPLY_JOB_ID=$(
+  oci resource-manager job create-apply-job \
+    --stack-id "${STACK_ID}" \
+    --execution-plan-strategy FROM_PLAN_JOB_ID \
+    --execution-plan-job-id "${PLAN_JOB_ID}" \
+    --display-name "${STACK_NAME}-apply" \
+    --profile ADMIN \
+    --auth security_token \
+    --query 'data.id' \
+    --raw-output
+)
+
+echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
+
+wait_job "${APPLY_JOB_ID}"
+```
+
+### 後片付け - ローカル -
+
+#### 1. 環境削除
+
+```bash
+DESTROY_JOB_ID=$(oci resource-manager job create-destroy-job \
+  --stack-id "${STACK_ID}" \
+  --execution-plan-strategy AUTO_APPROVED \
+  --display-name "${STACK_NAME}-destroy" \
+  --profile ADMIN \
+  --auth security_token \
+  --query 'data.id' \
+  --raw-output)
+
+echo "DESTROY_JOB_ID=${DESTROY_JOB_ID}"
+
+wait_job "${DESTROY_JOB_ID}"
+```
+
+```bash
+oci resource-manager stack delete \
+  --stack-id "${STACK_ID}" \
+  --force \
+  --wait-for-state DELETED \
+  --profile ADMIN \
+  --auth security_token
+```
+
+### 番外編
+
+#### スタック更新
+
+```bash
+zip -r "${ZIP_FILE}" envs
+```
+
+```bash
+oci resource-manager stack update \
+  --stack-id "${STACK_ID}" \
+  --config-source ${ZIP_FILE} \
+  --working-directory "envs" \
+  --terraform-version "${TF_VER}" \
+  --variables file://terraform.tfvars.json \
+  --wait-for-state "ACTIVE" \
+  --profile ADMIN \
+  --auth security_token \
+  --force
+```
+
+```bash
+# ① Job作成（ここでIDは必ず取得）
+PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
+  --stack-id "${STACK_ID}" \
+  --display-name "${STACK_NAME}-plan" \
+  --profile ADMIN --auth security_token \
+  --query 'data.id' \
+  --raw-output)
+
+echo "PLAN_JOB_ID=$PLAN_JOB_ID"
+
+wait_job "${PLAN_JOB_ID}"
+```
+
+```bash
+oci resource-manager job get-job-tf-plan \
+  --job-id "${PLAN_JOB_ID}" \
+  --tf-plan-format JSON \
+  --file tfplan.json \
+  --profile ADMIN \
+  --auth security_token >/dev/null
+
+jq -r '
+.resource_changes[]?
+' tfplan.json
+```
+
+```bash
+APPLY_JOB_ID=$(
+  oci resource-manager job create-apply-job \
+    --stack-id "${STACK_ID}" \
+    --execution-plan-strategy FROM_PLAN_JOB_ID \
+    --execution-plan-job-id "${PLAN_JOB_ID}" \
+    --display-name "${STACK_NAME}-apply" \
+    --profile ADMIN \
+    --auth security_token \
+    --query 'data.id' \
+    --raw-output
+)
+
+echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
+
+wait_job "${APPLY_JOB_ID}"
+```
+
+#### オブジェクトバルクアップロード
+
+```bash
+oci os object bulk-upload \
+  --bucket-name "${BUCKET_NAME}" \
+  --src-dir . \
+  --overwrite \
+  --exclude ".gitconfig" \
+  --exclude "*.zip" \
+  --exclude "*.md" \
+  --exclude "*.rst" \
+  --exclude ".gitignore" \
+  --exclude "doc/*" \
+  --exclude ".git/*" \
+  --exclude ".DS_Store" \
+  --profile ADMIN --auth security_token
+```
+
+#### オブジェクトバルクデリート
+
+```bash
+oci os object bulk-delete \
+  --bucket-name "${BUCKET_NAME}" \
+  --force \
+  --profile ADMIN --auth security_token
+```
+
+### 参考資料
+
+#### リファレンス
+
+- [terraform_data resource reference](https://developer.hashicorp.com/terraform/language/resources/terraform-data)
+- [Backend block configuration overview](https://developer.hashicorp.com/terraform/language/backend#partial-configuration)
+- [All Image Families - Oracle Cloud Infrastructure Documentation/Images](https://docs.oracle.com/en-us/iaas/images/)
+- [タグおよびタグ・ネームスペースの概念 - Oracle Cloud Infrastructureドキュメント](https://docs.oracle.com/ja-jp/iaas/Content/Tagging/Tasks/managingtagsandtagnamespaces.htm#Who)
+- [About the DNS Domains and Hostnames - Oracle Cloud Infrastructure Documentation](https://docs.oracle.com/en-us/iaas/Content/Network/Concepts/dns.htm#About)
+
+#### ブログ
+
+- [Terraformでmoduleを使わずに複数環境を構築する - Zenn](https://zenn.dev/smartround_dev/articles/5e20fa7223f0fd)
+- [Terraformでmoduleを使わずに複数環境を構築して感じた利点 - SpeakerDeck](https://speakerdeck.com/shonansurvivors/building-multiple-environments-without-using-modules-in-terraform)
+- [個人的備忘録：Terraformディレクトリ整理の個人メモ（ファイル分割編） - Qiita](https://qiita.com/free-honda/items/5484328d5b52326ed87e)
+- [Terraformの auto.tfvars を使うと、環境管理がずっと楽になる話 - note](https://note.com/minato_kame/n/neb271c81e0e2)
+- [Terraform v1.9 では null_resource を安全に terraform_data に置き換えることができる -Zenn](https://zenn.dev/terraform_jp/articles/tf-null-resource-to-terraform-data)
+- [Terraform cloudinit Provider を使って MIME multi-part 形式の cloud-init 設定を管理する - HatenaBlog](https://chaya2z.hatenablog.jp/entry/2025/10/15/040000)
+- [TerraformのDynamic Blocksを使ってみた - DevelopersIO](https://dev.classmethod.jp/articles/terraform-dynamic-blocks/)
