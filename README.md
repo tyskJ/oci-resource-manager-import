@@ -210,7 +210,8 @@ curl -L \
 ```bash
 unzip \
   "${OCI_PROVIDER_TMP_DIR}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip" \
-  -d "${OCI_PROVIDER_TMP_DIR}"
+  -d "${OCI_PROVIDER_TMP_DIR}" \
+  && rm -f "${OCI_PROVIDER_ZIP}"
 
 ls -l "${OCI_PROVIDER_TMP_DIR}"
 ```
