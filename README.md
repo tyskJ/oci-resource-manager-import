@@ -190,16 +190,12 @@ wait_job "${PLAN_JOB_ID}"
 ```
 
 ```bash
-oci resource-manager job get-job-tf-plan \
+oci resource-manager job get-job-logs-content \
   --job-id "${PLAN_JOB_ID}" \
-  --tf-plan-format JSON \
-  --file tfplan.json \
   --profile ADMIN \
-  --auth security_token >/dev/null
-
-jq -r '
-.resource_changes[]?
-' tfplan.json
+  --auth security_token \
+  | jq -r '.data' \
+  | sed -E 's/^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\[TERRAFORM_CONSOLE\] \[INFO\] ?//'
 ```
 
 #### 3. Deploy
@@ -465,16 +461,12 @@ wait_job "${PLAN_JOB_ID}"
 Plan の内容を取得します。
 
 ```bash
-oci resource-manager job get-job-tf-plan \
+oci resource-manager job get-job-logs-content \
   --job-id "${PLAN_JOB_ID}" \
-  --tf-plan-format JSON \
-  --file tfplan.json \
   --profile ADMIN \
-  --auth security_token >/dev/null
-
-jq -r '
-.resource_changes[]?
-' tfplan.json
+  --auth security_token \
+  | jq -r '.data' \
+  | sed -E 's/^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\[TERRAFORM_CONSOLE\] \[INFO\] ?//'
 ```
 
 Import 対象の Subnet が新規作成ではなく、Import として認識されていることを確認します。
