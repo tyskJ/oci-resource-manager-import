@@ -135,7 +135,7 @@ oci resource-manager stack create \
 ```bash
 STACK_ID=$(oci resource-manager stack list \
   --all \
-  --compartment-id "${DIP_COMPARTMENT_OCID}" \
+  --compartment-id "${TENANCY_ID}" \
   --display-name "${STACK_NAME}" \
   --profile ADMIN --auth security_token \
   --query 'data[0].id' \
@@ -369,4 +369,5 @@ oci os object bulk-delete \
 
 #### リファレンス
 
+- [リソース検出 - Oracle Cloud Infrastructure ドキュメント](https://docs.oracle.com/ja-jp/iaas/Content/ResourceManager/Concepts/resource-discovery.htm)
 - [リソース検出の設定 - Oracle Cloud Infrastructure ドキュメント](https://docs.oracle.com/ja-jp/iaas/Content/dev/terraform/tutorials/tf-resource-discovery-setup.htm)
