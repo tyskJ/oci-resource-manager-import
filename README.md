@@ -54,32 +54,54 @@ zip -r "${ZIP_FILE}" envs
 ```bash
 wait_job() {
   local JOB_ID=$1
+  local STATE
+  local PREV_STATE=""
 
   while true; do
-    STATE=$(oci resource-manager job get \
+    if ! STATE=$(oci resource-manager job get \
       --job-id "${JOB_ID}" \
       --profile ADMIN \
       --auth security_token \
       --query 'data."lifecycle-state"' \
-      --raw-output)
+      --raw-output); then
+      echo "ERROR: Failed to get job state."
+      return 1
+    fi
 
-    echo "Job=${JOB_ID} State=${STATE}"
+    if [[ "${STATE}" != "${PREV_STATE}" ]]; then
+      echo "State: ${STATE}"
+      PREV_STATE="${STATE}"
+    fi
 
     case "${STATE}" in
       SUCCEEDED)
-        echo "Job succeeded."
         return 0
         ;;
+
       FAILED|CANCELED)
-        echo "ERROR: Job failed."
+        echo
+        echo "ERROR: Job ${STATE}"
+
         oci resource-manager job get \
           --job-id "${JOB_ID}" \
           --profile ADMIN \
-          --auth security_token
+          --auth security_token \
+          --query 'data.{
+            ErrorCode: "failure-details".code,
+            ErrorMessage: "failure-details".message
+          }'
+
         return 1
         ;;
+
+      ACCEPTED|IN_PROGRESS|CANCELING)
+        echo "Waiting 10 seconds..."
+        sleep 10
+        ;;
+
       *)
-        sleep 30
+        echo "ERROR: Unexpected job state: ${STATE}"
+        return 1
         ;;
     esac
   done
@@ -113,6 +135,7 @@ cat <<EOF > terraform.tfvars.json
   "tenancy_ocid": "${TENANCY_ID}",
   "region": "${REGION}",
   "system_name": "${SYSTEM_NAME}",
+  "vcn_cidr": "10.0.0.0/16"
 }
 EOF
 ```
@@ -151,7 +174,7 @@ PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
   --query 'data.id' \
   --raw-output)
 
-echo "PLAN_JOB_ID=$PLAN_JOB_ID"
+echo "PLAN_JOB_ID=${PLAN_JOB_ID}"
 
 wait_job "${PLAN_JOB_ID}"
 ```
@@ -302,7 +325,7 @@ PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
   --query 'data.id' \
   --raw-output)
 
-echo "PLAN_JOB_ID=$PLAN_JOB_ID"
+echo "PLAN_JOB_ID=${PLAN_JOB_ID}"
 
 wait_job "${PLAN_JOB_ID}"
 ```
