@@ -18,9 +18,13 @@
 - Python 3.14.2
 - Terraform v1.15.7 on darwin_arm64
 
+---
+
 ### フォルダ構成
 
 - [こちら](./folder.md) を参照
+
+---
 
 ### 前提条件
 
@@ -31,11 +35,15 @@
 oci session authenticate
 ```
 
+---
+
 ### 事前作業(1)
 
 #### 1. 各種モジュールインストール
 
 - [GitHub](https://github.com/tyskJ/common-environment-setup) を参照
+
+---
 
 ### 事前作業 - ローカル -
 
@@ -107,6 +115,8 @@ wait_job() {
   done
 }
 ```
+
+---
 
 ### 実作業 - OCI Resource Manager -
 
@@ -212,23 +222,58 @@ echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
 wait_job "${APPLY_JOB_ID}"
 ```
 
-### Resource Discovery 設定
+#### 4. Import用リソース作成
+
+> [!NOTE]
+>
+> `COMPARTMENT_OCID` は、作成するSubnetのコンパートメントOCIDに変更してください
+> `VCN_OCID` は、作成するSubnetを配置するVCNのOCIDに変更してください
+
+```bash
+COMPARTMENT_OCID="<compartment-ocid>"
+VCN_OCID="<vcn-ocid>"
+SUBNET_NAME="private-subnet"
+SUBNET_CIDR="10.0.1.0/24"
+
+oci network subnet create \
+  --compartment-id "${COMPARTMENT_OCID}" \
+  --vcn-id "${VCN_OCID}" \
+  --display-name "${SUBNET_NAME}" \
+  --cidr-block "${SUBNET_CIDR}" \
+  --prohibit-public-ip-on-vnic true \
+  --profile ADMIN \
+  --auth security_token \
+  --wait-for-state AVAILABLE
+```
+
+#### 5. Resource Discovery 設定
+
+Resource Discovery を実行するため、OCI Terraform Provider をローカル環境へ配置します。
+
+まず、利用する OCI Terraform Provider のバージョンとアーキテクチャを定義します。
 
 ```bash
 OCI_PROVIDER_VERSION="9.3.0"
 OCI_PROVIDER_ARCH="arm64"
 ```
 
+OCI Terraform Provider を一時的に展開するためのディレクトリを作成します。
+
 ```bash
 OCI_PROVIDER_TMP_DIR="/tmp/oci-provider"
 mkdir -p "${OCI_PROVIDER_TMP_DIR}"
 ```
+
+指定したバージョン・アーキテクチャの OCI Terraform Provider をダウンロードします。
 
 ```bash
 curl -L \
   -o "${OCI_PROVIDER_TMP_DIR}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip" \
   "https://releases.hashicorp.com/terraform-provider-oci/${OCI_PROVIDER_VERSION}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip"
 ```
+
+ダウンロードした ZIP ファイルを展開します。  
+展開に成功した場合は、不要になった ZIP ファイルを削除します。
 
 ```bash
 OCI_PROVIDER_ZIP="${OCI_PROVIDER_TMP_DIR}/terraform-provider-oci_${OCI_PROVIDER_VERSION}_darwin_${OCI_PROVIDER_ARCH}.zip"
@@ -241,16 +286,22 @@ unzip \
 ls -l "${OCI_PROVIDER_TMP_DIR}"
 ```
 
+展開した OCI Terraform Provider を `/usr/local/bin` 配下へ配置します。
+
 ```bash
 sudo mv \
   "${OCI_PROVIDER_TMP_DIR}"/terraform-provider-oci_* \
   /usr/local/bin/
 ```
 
+配置した OCI Terraform Provider のパスを取得します。
+
 ```bash
 OCI_PROVIDER_BIN=$(ls /usr/local/bin/terraform-provider-oci*)
 echo "${OCI_PROVIDER_BIN}"
 ```
+
+Resource Discovery を簡単に実行できるよう、`tf-oci` という名前でシンボリックリンクを作成します。
 
 ```bash
 sudo ln -sfn \
@@ -260,12 +311,207 @@ sudo ln -sfn \
 ls -l /usr/local/bin/tf-oci
 ```
 
+最後に、Resource Discovery が利用できることを確認します。
+
+以下のコマンドで、Resource Discovery が対応しているサービスおよび Terraform Resource の一覧を確認できます。
+
 ```bash
 tf-oci -command=list_export_services
 tf-oci -command=list_export_resources
 ```
 
-### Import リソース
+#### 6. Import リソースの Terraform Configuration 生成
+
+> [!NOTE]
+>
+> `SUBNET_OCID` は、Import 対象の Subnet OCID に変更してください。
+
+```bash
+SUBNET_OCID="<subnet-ocid>"
+```
+
+Resource Discovery の出力先ディレクトリを定義します。
+
+```bash
+DISCOVERY_OUTPUT_DIR="$(pwd)/resource-discovery"
+```
+
+既存の出力が残っている場合に備えて、出力先ディレクトリを再作成します。
+
+```bash
+rm -rf "${DISCOVERY_OUTPUT_DIR}" \
+  && mkdir -p "${DISCOVERY_OUTPUT_DIR}"
+```
+
+Resource Discovery が OCI CLI のセッション認証を利用できるよう、環境変数を設定します。
+
+```bash
+export OCI_AUTH="SecurityToken"
+export OCI_CONFIG_FILE_PROFILE="ADMIN"
+export TF_VAR_region="ap-tokyo-1"
+```
+
+Import 対象の Subnet を指定して Resource Discovery を実行します。
+
+```bash
+tf-oci \
+  -command=export \
+  -ids="oci_core_subnet:${SUBNET_OCID}" \
+  -output_path="${DISCOVERY_OUTPUT_DIR}"
+```
+
+生成されたファイルを確認します。
+
+```bash
+find "${DISCOVERY_OUTPUT_DIR}" -type f
+```
+
+#### 7. Resource Block 追加
+
+Resource Discovery によって生成された `resources.tf` から、Import 対象の Subnet に該当する Resource Block を確認します。
+
+```bash
+cat "${DISCOVERY_OUTPUT_DIR}/resources.tf"
+```
+
+生成された Resource Block を、既存 Stack の構成に合わせて `envs/main.tf` へ追加します。
+
+例えば、以下のような Resource Block が生成された場合、
+
+```hcl
+resource "oci_core_subnet" "export_subnet" {
+  cidr_block                 = "10.0.1.0/24"
+  compartment_id             = "<compartment-ocid>"
+  display_name               = "private-subnet"
+  prohibit_public_ip_on_vnic = true
+  vcn_id                     = "<vcn-ocid>"
+}
+```
+
+既存 Stack の Variable や Resource Reference に合わせて修正します。
+
+```hcl
+resource "oci_core_subnet" "private" {
+  cidr_block                 = "10.0.1.0/24"
+  compartment_id             = var.tenancy_ocid
+  display_name               = "private-subnet"
+  prohibit_public_ip_on_vnic = true
+  vcn_id                     = oci_core_vcn.main.id
+}
+```
+
+> [!NOTE]
+>
+> Resource Discovery で生成された Resource Block は、そのまま利用するのではなく、既存 Stack の構成に合わせて調整します。
+
+Resource Block の転記が完了したら、Resource Discovery の生成物を削除します。
+
+```bash
+rm -rf "${DISCOVERY_OUTPUT_DIR}"
+```
+
+#### 8. import block 追加
+
+既存の Subnet と、追加した Terraform Resource を紐付けるため、`import` block を追加します。
+
+```hcl
+import {
+  to = oci_core_subnet.private
+  id = "<subnet-ocid>"
+}
+```
+
+`id` に変数は利用できないため、Import 対象となる Subnet の OCID を直接指定します。
+
+#### 9. スタック更新
+
+Terraform Configuration を再度圧縮します。
+
+```bash
+zip -r "${ZIP_FILE}" envs
+```
+
+Resource Manager Stack を更新します。
+
+```bash
+oci resource-manager stack update \
+  --stack-id "${STACK_ID}" \
+  --config-source "${ZIP_FILE}" \
+  --working-directory "envs" \
+  --terraform-version "${TF_VER}" \
+  --variables file://terraform.tfvars.json \
+  --wait-for-state "ACTIVE" \
+  --profile ADMIN \
+  --auth security_token \
+  --force
+```
+
+#### 10. Plan Job 作成
+
+```bash
+PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
+  --stack-id "${STACK_ID}" \
+  --display-name "${STACK_NAME}-plan" \
+  --profile ADMIN \
+  --auth security_token \
+  --query 'data.id' \
+  --raw-output)
+
+echo "PLAN_JOB_ID=${PLAN_JOB_ID}"
+
+wait_job "${PLAN_JOB_ID}"
+```
+
+Plan の内容を取得します。
+
+```bash
+oci resource-manager job get-job-tf-plan \
+  --job-id "${PLAN_JOB_ID}" \
+  --tf-plan-format JSON \
+  --file tfplan.json \
+  --profile ADMIN \
+  --auth security_token >/dev/null
+
+jq -r '
+.resource_changes[]?
+' tfplan.json
+```
+
+Import 対象の Subnet が新規作成ではなく、Import として認識されていることを確認します。
+
+#### 11. Apply Job 作成
+
+Plan の内容に問題がなければ Apply Job を作成します。
+
+```bash
+APPLY_JOB_ID=$(oci resource-manager job create-apply-job \
+  --stack-id "${STACK_ID}" \
+  --execution-plan-strategy FROM_PLAN_JOB_ID \
+  --execution-plan-job-id "${PLAN_JOB_ID}" \
+  --display-name "${STACK_NAME}-apply" \
+  --profile ADMIN \
+  --auth security_token \
+  --query 'data.id' \
+  --raw-output)
+
+echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
+
+wait_job "${APPLY_JOB_ID}"
+```
+
+Apply が成功すると、既存 Subnet が Resource Manager の Terraform State に登録されます。
+
+#### 12. Import 結果確認
+
+再度 Plan Job を実行し、差分が発生しないことを確認します。
+
+最終的に以下の状態となれば Import 完了です。
+
+```text
+0 to add, 0 to change, 0 to destroy
+```
+
+---
 
 ### 後片付け - ローカル -
 
@@ -295,98 +541,7 @@ oci resource-manager stack delete \
   --auth security_token
 ```
 
-### 番外編
-
-#### スタック更新
-
-```bash
-zip -r "${ZIP_FILE}" envs
-```
-
-```bash
-oci resource-manager stack update \
-  --stack-id "${STACK_ID}" \
-  --config-source ${ZIP_FILE} \
-  --working-directory "envs" \
-  --terraform-version "${TF_VER}" \
-  --variables file://terraform.tfvars.json \
-  --wait-for-state "ACTIVE" \
-  --profile ADMIN \
-  --auth security_token \
-  --force
-```
-
-```bash
-# ① Job作成（ここでIDは必ず取得）
-PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
-  --stack-id "${STACK_ID}" \
-  --display-name "${STACK_NAME}-plan" \
-  --profile ADMIN --auth security_token \
-  --query 'data.id' \
-  --raw-output)
-
-echo "PLAN_JOB_ID=${PLAN_JOB_ID}"
-
-wait_job "${PLAN_JOB_ID}"
-```
-
-```bash
-oci resource-manager job get-job-tf-plan \
-  --job-id "${PLAN_JOB_ID}" \
-  --tf-plan-format JSON \
-  --file tfplan.json \
-  --profile ADMIN \
-  --auth security_token >/dev/null
-
-jq -r '
-.resource_changes[]?
-' tfplan.json
-```
-
-```bash
-APPLY_JOB_ID=$(
-  oci resource-manager job create-apply-job \
-    --stack-id "${STACK_ID}" \
-    --execution-plan-strategy FROM_PLAN_JOB_ID \
-    --execution-plan-job-id "${PLAN_JOB_ID}" \
-    --display-name "${STACK_NAME}-apply" \
-    --profile ADMIN \
-    --auth security_token \
-    --query 'data.id' \
-    --raw-output
-)
-
-echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
-
-wait_job "${APPLY_JOB_ID}"
-```
-
-#### オブジェクトバルクアップロード
-
-```bash
-oci os object bulk-upload \
-  --bucket-name "${BUCKET_NAME}" \
-  --src-dir . \
-  --overwrite \
-  --exclude ".gitconfig" \
-  --exclude "*.zip" \
-  --exclude "*.md" \
-  --exclude "*.rst" \
-  --exclude ".gitignore" \
-  --exclude "doc/*" \
-  --exclude ".git/*" \
-  --exclude ".DS_Store" \
-  --profile ADMIN --auth security_token
-```
-
-#### オブジェクトバルクデリート
-
-```bash
-oci os object bulk-delete \
-  --bucket-name "${BUCKET_NAME}" \
-  --force \
-  --profile ADMIN --auth security_token
-```
+---
 
 ### 参考資料
 
