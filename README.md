@@ -49,15 +49,26 @@ oci session authenticate
 
 #### 1. 定義ファイルの圧縮
 
+OCI Resource Manager に Terraform Configuration をアップロードするため、`envs` ディレクトリを ZIP ファイルに圧縮します。
+
+まず、作成する ZIP ファイル名を定義します。
+
 ```bash
 ZIP_FILE="stack.zip"
 ```
+
+Terraform Configuration を圧縮します。
 
 ```bash
 zip -r "${ZIP_FILE}" envs
 ```
 
 #### 2. 関数定義
+
+Resource Manager の Job は非同期で実行されるため、Job の完了を待機する `wait_job` 関数を定義します。
+
+Job の状態を10秒間隔で確認し、`SUCCEEDED` になるまで待機します。  
+`FAILED` または `CANCELED` となった場合は、エラー内容を表示して処理を終了します。
 
 ```bash
 wait_job() {
@@ -122,6 +133,10 @@ wait_job() {
 
 #### 1. スタック作成
 
+Terraform Configuration を管理する Resource Manager Stack を作成します。
+
+まず、Stack を作成するルート・コンパートメント（Tenancy）の OCID を取得します。
+
 ```bash
 TENANCY_ID=$(oci iam compartment list \
   --lifecycle-state ACTIVE \
@@ -132,12 +147,18 @@ TENANCY_ID=$(oci iam compartment list \
   --raw-output)
 ```
 
+続いて、Resource Manager Stack の作成に使用する各種パラメータを定義します。
+
+リージョンは、OCI CLI の `ADMIN` プロファイルから取得します。
+
 ```bash
 REGION=$(awk -F= '/\[ADMIN\]/{f=1} f && /^region=/{print $2; exit}' ~/.oci/config)
 SYSTEM_NAME="oci-resource-manager-import"
 TF_VER="1.5.x"
 STACK_NAME="${SYSTEM_NAME}-stack"
 ```
+
+Terraform へ渡す Variable を `terraform.tfvars.json` として作成します。
 
 ```bash
 cat <<EOF > terraform.tfvars.json
@@ -150,37 +171,47 @@ cat <<EOF > terraform.tfvars.json
 EOF
 ```
 
+準備した Terraform Configuration と Variable を使用して Resource Manager Stack を作成します。
+
 ```bash
 oci resource-manager stack create \
---compartment-id "${TENANCY_ID}" \
---display-name "${STACK_NAME}" \
---description "Dev Stack" \
---config-source "${ZIP_FILE}" \
---working-directory "envs" \
---terraform-version "${TF_VER}" \
---variables file://terraform.tfvars.json \
---wait-for-state "ACTIVE" \
---profile ADMIN --auth security_token
+  --compartment-id "${TENANCY_ID}" \
+  --display-name "${STACK_NAME}" \
+  --description "Dev Stack" \
+  --config-source "${ZIP_FILE}" \
+  --working-directory "envs" \
+  --terraform-version "${TF_VER}" \
+  --variables file://terraform.tfvars.json \
+  --wait-for-state "ACTIVE" \
+  --profile ADMIN \
+  --auth security_token
 ```
 
 #### 2. Plan Job 作成
+
+作成した Stack に対して Plan Job を実行し、Terraform によってどのような変更が行われるか確認します。
+
+まず、作成した Stack の OCID を取得します。
 
 ```bash
 STACK_ID=$(oci resource-manager stack list \
   --all \
   --compartment-id "${TENANCY_ID}" \
   --display-name "${STACK_NAME}" \
-  --profile ADMIN --auth security_token \
+  --profile ADMIN \
+  --auth security_token \
   --query 'data[0].id' \
   --raw-output)
 ```
 
+Plan Job を作成し、後続処理で利用する Job OCID を取得します。
+
 ```bash
-# ① Job作成（ここでIDは必ず取得）
 PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
   --stack-id "${STACK_ID}" \
   --display-name "${STACK_NAME}-plan" \
-  --profile ADMIN --auth security_token \
+  --profile ADMIN \
+  --auth security_token \
   --query 'data.id' \
   --raw-output)
 
@@ -188,6 +219,10 @@ echo "PLAN_JOB_ID=${PLAN_JOB_ID}"
 
 wait_job "${PLAN_JOB_ID}"
 ```
+
+Plan Job が完了したら、Terraform の実行ログを確認します。
+
+`jq` でログ本文のみを取得し、`sed` で Resource Manager が付与する日時やログレベルを除外して、Terraform の出力を見やすくしています。
 
 ```bash
 oci resource-manager job get-job-logs-content \
@@ -199,6 +234,10 @@ oci resource-manager job get-job-logs-content \
 ```
 
 #### 3. Deploy
+
+Plan の内容に問題がなければ、作成した Plan Job を指定して Apply Job を実行します。
+
+`FROM_PLAN_JOB_ID` を指定することで、確認済みの Plan と同じ内容を Apply します。
 
 ```bash
 APPLY_JOB_ID=$(
@@ -218,12 +257,18 @@ echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
 wait_job "${APPLY_JOB_ID}"
 ```
 
+Apply Job が `SUCCEEDED` となれば、初期構成のデプロイは完了です。
+
 #### 4. Import用リソース作成
+
+Import の動作を確認するため、Terraform 管理外の Subnet を OCI CLI から作成します。
+
+この Subnet は既存 Resource Manager Stack の Terraform Configuration には含まれていないため、この時点では Terraform 管理外のリソースとなります。
 
 > [!NOTE]
 >
-> `COMPARTMENT_OCID` は、作成するSubnetのコンパートメントOCIDに変更してください
-> `VCN_OCID` は、作成するSubnetを配置するVCNのOCIDに変更してください
+> `COMPARTMENT_OCID` は、作成する Subnet のコンパートメント OCID に変更してください。  
+> `VCN_OCID` は、作成する Subnet を配置する VCN の OCID に変更してください。
 
 ```bash
 COMPARTMENT_OCID="<compartment-ocid>"
@@ -444,6 +489,10 @@ oci resource-manager stack update \
 
 #### 10. Plan Job 作成
 
+Stack の更新が完了したら、再度 Plan Job を実行します。
+
+今回は `import` block を追加しているため、対象 Subnet が新規作成ではなく Import として認識されることを確認します。
+
 ```bash
 PLAN_JOB_ID=$(oci resource-manager job create-plan-job \
   --stack-id "${STACK_ID}" \
@@ -458,7 +507,7 @@ echo "PLAN_JOB_ID=${PLAN_JOB_ID}"
 wait_job "${PLAN_JOB_ID}"
 ```
 
-Plan の内容を取得します。
+Plan の実行ログを確認します。
 
 ```bash
 oci resource-manager job get-job-logs-content \
@@ -469,11 +518,21 @@ oci resource-manager job get-job-logs-content \
   | sed -E 's/^[0-9]{4}\/[0-9]{2}\/[0-9]{2} [0-9]{2}:[0-9]{2}:[0-9]{2}\[TERRAFORM_CONSOLE\] \[INFO\] ?//'
 ```
 
-Import 対象の Subnet が新規作成ではなく、Import として認識されていることを確認します。
+以下のように、対象 Subnet が `will be imported` と表示されることを確認します。
+
+```text
+# oci_core_subnet.private will be imported
+```
+
+また、意図しない新規作成・変更・削除が発生していないことを確認します。
+
+```text
+Plan: 1 to import, 0 to add, 0 to change, 0 to destroy.
+```
 
 #### 11. Apply Job 作成
 
-Plan の内容に問題がなければ Apply Job を作成します。
+Plan の内容に問題がなければ、確認した Plan Job を指定して Apply Job を実行します。
 
 ```bash
 APPLY_JOB_ID=$(oci resource-manager job create-apply-job \
@@ -491,13 +550,13 @@ echo "APPLY_JOB_ID=${APPLY_JOB_ID}"
 wait_job "${APPLY_JOB_ID}"
 ```
 
-Apply が成功すると、既存 Subnet が Resource Manager の Terraform State に登録されます。
+Apply が成功すると、既存 Subnet と Terraform Resource が Resource Manager の Terraform State 上で紐付けられます。
 
 #### 12. Import 結果確認
 
-再度 Plan Job を実行し、差分が発生しないことを確認します。
+Import が完了したら、再度 Plan Job を実行します。
 
-最終的に以下の状態となれば Import 完了です。
+Terraform Configuration・Terraform State・実際の OCI リソースに差分がなく、以下の状態となれば Import 完了です。
 
 ```text
 0 to add, 0 to change, 0 to destroy
@@ -508,6 +567,8 @@ Apply が成功すると、既存 Subnet が Resource Manager の Terraform Stat
 ### 後片付け - ローカル -
 
 #### 1. 環境削除
+
+検証で Resource Manager から作成したリソースを削除するため、Destroy Job を実行します。
 
 ```bash
 DESTROY_JOB_ID=$(oci resource-manager job create-destroy-job \
@@ -523,6 +584,8 @@ echo "DESTROY_JOB_ID=${DESTROY_JOB_ID}"
 
 wait_job "${DESTROY_JOB_ID}"
 ```
+
+Destroy Job が完了したら、不要になった Resource Manager Stack を削除します。
 
 ```bash
 oci resource-manager stack delete \
