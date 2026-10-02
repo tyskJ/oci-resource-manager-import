@@ -2,7 +2,7 @@
 
 # OCI Resource Managerで既存リソースをimportしたい 〜terraform importとの違いと実践手順〜
 
-- [詳細]()
+- [詳細](https://qiita.com/tyskJ/items/d961731ee474eca14e18)
 
 ## 構成図
 
